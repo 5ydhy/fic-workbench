@@ -724,17 +724,17 @@ async function syncFromDisk() {
     const dr = await DB.get("rev"); if ((dr || 0) <= rev) return;
     await _pq;
     const o = await DB.read(), h = hydrate(o), r = o.r;
-    if (!h || r <= rev || _st || ctrl || chatCtrl) return;
+    if (!h || r <= rev || _st || ctrl || chatCtrl || fixCtrl) return;
     S = h[0]; markSynced(S); saved = h[1]; snaps = h[2]; snapSaved = new Map(h[2]); fxSaved = h[3]; fxDirty.clear(); rev = r; HIST_STACK.clear(); cands = null; chatEdit = null;
     await loadUndo();
     if (!fic()) S.cur = S.fics[0] ? S.fics[0].id : null;
     render();
   } catch (e) {}
 }
-const resync = () => { if (ready && !conflict && !_st && !ctrl && !chatCtrl && !document.querySelector("dialog[open]")) syncFromDisk(); };
+const resync = () => { if (ready && !conflict && !_st && !ctrl && !chatCtrl && !fixCtrl && !document.querySelector("dialog[open]")) syncFromDisk(); };
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") resync(); });
 addEventListener("pageshow", resync); addEventListener("focus", resync);
-if (bc) bc.onmessage = e => { if (e.data === "wipe") { ready = false; conflict = true; clearTimeout(_st); location.reload(); return; } if (ready && !conflict && e.data > rev && !_st && !ctrl && !chatCtrl) syncFromDisk(); };
+if (bc) bc.onmessage = e => { if (e.data === "wipe") { ready = false; conflict = true; clearTimeout(_st); location.reload(); return; } if (ready && !conflict && e.data > rev && !_st && !ctrl && !chatCtrl && !fixCtrl) syncFromDisk(); };
 function flush() { clearTimeout(_st); _st = null; if (ready) return persist(); }
 const totalAllWords = () => S.fics.reduce((n, f) => n + ficTotalWords(f), 0);
 // Without IndexedDB (Private Mode, blocked storage) work lives in localStorage only: it can vanish when the tab closes, and snapshots and undo are not kept. Say so once per session.
@@ -1113,7 +1113,7 @@ function render() {
   const m = $("main");
   m.className = (tab === "write" || tab === "chat") && fic() ? "wr" : "";
   if (tab === "settings") return viewSettings(m);
-  if (!fic()) { m.innerHTML = `<div class="empty"><h2 style="font-size:26px">Start your first fic</h2><p>Keep your canon, chapters, and drafts in one place. Add an API key in Settings to generate.</p><div class="row" style="justify-content:center"><button class="b" id="ne">New fic</button><button class="g" id="ks">Add API key</button></div></div>`; $("ne").onclick = newFic; $("ks").onclick = () => { tab = "settings"; render(); }; return; }
+  if (!fic()) { m.innerHTML = `<div class="empty"><h2 style="font-size:26px">Start your first fic</h2><p>Keep your canon, chapters, and drafts in one place. Add an API key in Settings to generate.</p><div class="row" style="justify-content:center"><button class="b" id="ne">New fic</button><button class="g" id="imp0">Import a fic</button><button class="g" id="ks">Add API key</button></div></div>`; $("ne").onclick = newFic; $("imp0").onclick = () => importFlow(null); $("ks").onclick = () => { tab = "settings"; render(); }; return; }
   ({ write: viewWrite, chat: viewChat, chapters: viewChapters, bible: viewBible })[tab](m);
   if (!hasFieldSizing) m.querySelectorAll("textarea").forEach(autoFit);
 }
@@ -1133,7 +1133,7 @@ function viewBible(m) {
   <label for="fstyle">Style notes for this fic (added to your global style; use this to override POV or tense)</label>
   <textarea id="fstyle" rows="2">${esc(f.style)}</textarea></details>
   <div class="row"><h2 class="grow" style="margin:0">Entries</h2><button class="g" id="bMore" type="button" aria-expanded="false" aria-label="More entry tools" title="Suggest, tidy, import">${svg("more")}</button><button class="b" id="addE">Add entry</button></div>
-  <div class="row" id="bTools" hidden><button class="g" id="sugB" type="button">Suggest entries from current chapter</button><button class="g" id="tidyB" type="button">Tidy Bible</button><button class="g" id="cardB" type="button">Import card</button><input type="file" id="cardFile" accept=".png,.json,image/png,application/json" hidden><button class="g" id="libB" type="button">Add from library</button></div>
+  <div class="row" id="bTools" hidden><button class="g" id="sugB" type="button">Suggest entries from current chapter</button><button class="g" id="memB" type="button">Build from chapters</button><button class="g" id="tidyB" type="button">Tidy Bible</button><button class="g" id="cardB" type="button">Import card</button><input type="file" id="cardFile" accept=".png,.json,image/png,application/json" hidden><button class="g" id="libB" type="button">Add from library</button></div>
   <details class="more"><summary>How entries are matched</summary><div class="mute">Entries are sent when their name, an alias, or a character\u2019s first name appears in recent text or your instruction. Pinned entries and rules are always sent. Tags on each row show what the next generation for this chapter would include: <b>always</b>, <b>in context</b>, or <b>over limit</b> (matched but cut to fit the budget). Use "Case-sensitive match" for names that are also common English words (like Rose, Will, May, or Haven).</div></details>
   <div class="row" style="margin:10px 0 0"><input id="bq" type="search" class="grow" placeholder="Search entries" aria-label="Search entries" value="${esc(bibleQ)}" autocomplete="off"><select id="bt" style="width:auto" aria-label="Filter by type"><option value="">All types</option>${TYPES.map(t => `<option ${t === bibleT ? "selected" : ""}>${t}</option>`).join("")}</select></div>
   <div class="mute" id="bcount" style="font-size:13px;margin:6px 0 2px"></div>
@@ -1150,6 +1150,7 @@ function viewBible(m) {
   $("fstyle").oninput = e => { f.style = e.target.value; save(); $("styleHint").textContent = hintOf(f.style); };
   m.querySelectorAll("details.sec").forEach(d => { d.ontoggle = () => { if (d.open) secState.add(d.dataset.k); else secState.delete(d.dataset.k); }; });
   $("bMore").onclick = e => { const t = $("bTools"); t.hidden = !t.hidden; e.currentTarget.setAttribute("aria-expanded", String(!t.hidden)); };
+  $("memB").onclick = () => memoryDialog(f, f.chapters, {});
   $("sugB").onclick = () => { const c = curCh(f); if (!c) return setStatus("No chapter yet."); suggestBible(f, c); };
   $("tidyB").onclick = () => tidyBible(f);
   $("libB").onclick = () => libraryPicker(f);
@@ -1330,12 +1331,13 @@ function drawSources(f, m) {
 /* ---------- Chapters ---------- */
 function viewChapters(m) {
   const f = fic();
-  m.innerHTML = `<div class="row"><h2 class="grow" style="margin:0">Chapters</h2><button class="b" id="addC">Add chapter</button></div><input id="q" type="search" placeholder="Search titles, summaries and text" aria-label="Search chapters"><div id="chs"></div>`;
+  m.innerHTML = `<div class="row"><h2 class="grow" style="margin:0">Chapters</h2><button class="g" id="impC">Import</button><button class="b" id="addC">Add chapter</button></div><input id="q" type="search" placeholder="Search titles, summaries and text" aria-label="Search chapters"><div id="chs"></div>`;
   $("addC").onclick = () => {
     if (f.chapters.length === 1) { f.chat.forEach(x => { if (!x.ch) x.ch = f.chapters[0].id; }); dirtyFx(f); }
     const c = { id: uid(), title: "Chapter " + (f.chapters.length + 1), status: "idea", summary: "", next: "", text: "", rejected: [] };
     f.chapters.push(c); f.ch = c.id; save(); tab = "write"; render();
   };
+  $("impC").onclick = () => importFlow(f);
   const box = $("chs"), qi = $("q"); let qt;
   const snip = (c, q) => { for (const s of [c.text, c.summary, c.title]) { const i = s.toLowerCase().indexOf(q); if (i > -1) { const a = Math.max(0, i - 40); return (a ? "…" : "") + esc(s.slice(a, i)) + "<mark>" + esc(s.slice(i, i + q.length)) + "</mark>" + esc(s.slice(i + q.length, i + q.length + 80)) + "…"; } } return ""; };
   const draw = () => {
@@ -2073,6 +2075,614 @@ async function suggestBible(f, c) {
     const ab = e.name === "AbortError";
     setStatus(ab ? "Stopped. The bible is unchanged." : "Couldn't scan for bible updates: " + e.message, ab ? "info" : "err");
   } finally { fixCtrl = null; }
+}
+
+/* ---------- Import: reading files ----------
+   Everything here is DOM-free. Text, Markdown, HTML, DOCX, EPUB and ZIP files become plain text with *italic*, **bold** and "# " headings. */
+const ENT = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", hellip: "\u2026", mdash: "\u2014", ndash: "\u2013", lsquo: "\u2018", rsquo: "\u2019", ldquo: "\u201c", rdquo: "\u201d", laquo: "\u00ab", raquo: "\u00bb", bull: "\u2022", middot: "\u00b7", copy: "\u00a9", reg: "\u00ae", trade: "\u2122", deg: "\u00b0", times: "\u00d7", sect: "\u00a7", para: "\u00b6", iexcl: "\u00a1", iquest: "\u00bf", szlig: "\u00df", shy: "", zwj: "", zwnj: "", ensp: " ", emsp: " ", thinsp: " ",
+  agrave: "\u00e0", aacute: "\u00e1", acirc: "\u00e2", atilde: "\u00e3", auml: "\u00e4", aring: "\u00e5", aelig: "\u00e6", ccedil: "\u00e7", egrave: "\u00e8", eacute: "\u00e9", ecirc: "\u00ea", euml: "\u00eb", igrave: "\u00ec", iacute: "\u00ed", icirc: "\u00ee", iuml: "\u00ef", ntilde: "\u00f1", ograve: "\u00f2", oacute: "\u00f3", ocirc: "\u00f4", otilde: "\u00f5", ouml: "\u00f6", oslash: "\u00f8", ugrave: "\u00f9", uacute: "\u00fa", ucirc: "\u00fb", uuml: "\u00fc", yacute: "\u00fd", yuml: "\u00ff",
+  Agrave: "\u00c0", Aacute: "\u00c1", Acirc: "\u00c2", Atilde: "\u00c3", Auml: "\u00c4", Aring: "\u00c5", AElig: "\u00c6", Ccedil: "\u00c7", Egrave: "\u00c8", Eacute: "\u00c9", Ecirc: "\u00ca", Euml: "\u00cb", Igrave: "\u00cc", Iacute: "\u00cd", Icirc: "\u00ce", Iuml: "\u00cf", Ntilde: "\u00d1", Ograve: "\u00d2", Oacute: "\u00d3", Ocirc: "\u00d4", Otilde: "\u00d5", Ouml: "\u00d6", Oslash: "\u00d8", Ugrave: "\u00d9", Uacute: "\u00da", Ucirc: "\u00db", Uuml: "\u00dc", Yacute: "\u00dd" };
+function decEnt(s) {
+  return String(s).replace(/&(#x[0-9a-f]+|#\d+|[a-z][a-z0-9]*);/gi, (m, e) => {
+    if (e[0] === "#") {
+      const n = e[1] === "x" || e[1] === "X" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+      try { return n > 0 && n < 0x110000 ? String.fromCodePoint(n) : m; } catch (x) { return m; }
+    }
+    return ENT[e] !== undefined ? ENT[e] : ENT[e.toLowerCase()] !== undefined ? ENT[e.toLowerCase()] : m;
+  });
+}
+function decodeBytes(u8) {
+  if (u8.length >= 2 && ((u8[0] === 0xff && u8[1] === 0xfe) || (u8[0] === 0xfe && u8[1] === 0xff))) return new TextDecoder(u8[0] === 0xff ? "utf-16le" : "utf-16be").decode(u8);
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(u8).replace(/^\uFEFF/, ""); }
+  catch (e) { return new TextDecoder("windows-1252").decode(u8); }
+}
+// Collects text and writes *italic*, **bold**, ~~strike~~. Markers hug the words (never the spaces) and are closed at every line or paragraph break.
+function mdWriter() {
+  let out = "";
+  const open = [], MARK = { b: "**", i: "*", s: "~~" }, ORDER = ["b", "i", "s"];
+  const closeAll = () => {
+    if (!open.length) return;
+    const tail = out.match(/\s*$/)[0], c = open.slice().reverse().map(k => MARK[k]).join("");
+    out = out.slice(0, out.length - tail.length) + c + tail; open.length = 0;
+  };
+  const atBreak = () => out === "" || /\s$/.test(out);
+  return {
+    text(s, st) {
+      s = String(s).replace(/[\u200b\u200d\ufeff\u00ad]/g, "").replace(/\u00a0/g, " ");
+      if (!/\S/.test(s)) { if (s && !atBreak()) out += " "; return; }
+      const lead = /^\s/.test(s), trail = /\s$/.test(s), core = s.replace(/\s+/g, " ").trim();
+      if (open.some(k => !st.has(k))) closeAll();
+      if (lead && !atBreak()) out += " ";
+      ORDER.forEach(k => { if (st.has(k) && !open.includes(k)) { out += MARK[k]; open.push(k); } });
+      out += core; if (trail) out += " ";
+    },
+    br() { closeAll(); out = out.replace(/[ \t]+$/, ""); if (out && !out.endsWith("\n")) out += "\n"; },
+    block() { closeAll(); out = out.replace(/[ \t]+$/, ""); if (out) out = out.replace(/\n*$/, "\n\n"); },
+    raw(s) { out += s; },
+    result() { closeAll(); return out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim(); }
+  };
+}
+const BLOCK_TAGS = new Set(["p", "div", "section", "article", "blockquote", "ul", "ol", "tr", "table", "pre", "header", "footer", "figure", "dl", "dd", "dt", "body", "html", "main", "aside", "center", "address"]);
+const VOID_TAGS = new Set(["img", "meta", "link", "input", "wbr", "area", "base", "col", "source", "track", "param", "embed"]);
+const STYLE_TAGS = { em: "i", i: "i", cite: "i", dfn: "i", var: "i", strong: "b", b: "b", s: "s", strike: "s", del: "s" };
+function htmlToMd(html) {
+  html = String(html).replace(/<!--[\s\S]*?-->/g, "").replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, "").replace(/<\?[\s\S]*?\?>/g, "").replace(/<!doctype[^>]*>/gi, "")
+    .replace(/<(script|style|head|noscript|svg|template|nav)\b[\s\S]*?<\/\1\s*>/gi, "");
+  const w = mdWriter(), stack = [], rx = /<(\/?)([a-zA-Z][a-zA-Z0-9:_-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)>|([^<]+)|</g;
+  const styles = () => { const s = new Set(); stack.forEach(e => e.st.forEach(k => s.add(k))); return s; };
+  let m;
+  while ((m = rx.exec(html))) {
+    if (m[4] !== undefined) { w.text(decEnt(m[4]), styles()); continue; }
+    if (m[0] === "<") { w.text("<", styles()); continue; }
+    const closing = m[1] === "/", tag = m[2].toLowerCase().replace(/^.*:/, ""), attrs = m[3] || "", selfClose = /\/\s*$/.test(attrs), head = /^h([1-6])$/.exec(tag);
+    if (closing) {
+      let k = stack.length - 1; while (k >= 0 && stack[k].tag !== tag) k--;
+      if (k >= 0) stack.length = k;
+      if (BLOCK_TAGS.has(tag) || head || tag === "li") w.block();
+      continue;
+    }
+    if (tag === "br") { w.br(); continue; }
+    if (tag === "hr") { w.block(); w.raw("---"); w.block(); continue; }
+    if (VOID_TAGS.has(tag)) continue;
+    const st = [];
+    if (STYLE_TAGS[tag]) st.push(STYLE_TAGS[tag]);
+    const sm = attrs.match(/style\s*=\s*("([^"]*)"|'([^']*)')/i);
+    if (sm) { const css = sm[2] || sm[3] || ""; if (/font-style\s*:\s*italic/i.test(css)) st.push("i"); if (/font-weight\s*:\s*(bold|[6-9]00)/i.test(css)) st.push("b"); if (/text-decoration[^;]*line-through/i.test(css)) st.push("s"); }
+    if (head) { w.block(); if (+head[1] <= 3) w.raw("#".repeat(+head[1]) + " "); else st.push("b"); }
+    else if (tag === "li") { w.block(); w.raw("- "); }
+    else if (BLOCK_TAGS.has(tag)) w.block();
+    if (!selfClose) stack.push({ tag, st });
+  }
+  return w.result();
+}
+function docxToMd(xml) {
+  const w = mdWriter(), pRx = /<w:p(?:\s[^>]*)?>([\s\S]*?)<\/w:p>/g;
+  let pm;
+  while ((pm = pRx.exec(xml))) {
+    const body = pm[1], sm = body.match(/<w:pStyle\s+w:val="([^"]*)"/);
+    let pre = "";
+    if (sm) { const hm = sm[1].match(/^heading\s*([1-3])$/i); if (hm) pre = "#".repeat(+hm[1]) + " "; else if (/^title$/i.test(sm[1])) pre = "# "; }
+    w.block(); if (pre) w.raw(pre);
+    const rRx = /<w:r(?:\s[^>]*)?>([\s\S]*?)<\/w:r>/g;
+    let rm;
+    while ((rm = rRx.exec(body))) {
+      const run = rm[1], rp = (run.match(/<w:rPr>([\s\S]*?)<\/w:rPr>/) || [0, ""])[1];
+      const on = tag => { const q = rp.match(new RegExp("<w:" + tag + "(?:\\s[^>]*)?/?>")); if (!q) return false; const v = q[0].match(/w:val="([^"]*)"/); return !(v && /^(0|false|off|none)$/i.test(v[1])); };
+      const st = new Set(); if (on("i")) st.add("i"); if (on("b")) st.add("b"); if (on("strike")) st.add("s");
+      const tRx = /<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>|<w:tab\s*\/>|<w:br(?:\s[^>]*)?\/>|<w:noBreakHyphen\s*\/>/g;
+      let tm;
+      while ((tm = tRx.exec(run))) {
+        if (tm[1] !== undefined) w.text(decEnt(tm[1]), st);
+        else if (tm[0].startsWith("<w:tab")) w.text(" ", st);
+        else if (tm[0].startsWith("<w:br")) { if (!/w:type="page"/.test(tm[0])) w.br(); }
+        else w.text("-", st);
+      }
+    }
+    w.block();
+  }
+  return w.result();
+}
+// Plain text from a .txt file: tidy line endings, and turn single-newline paragraphs into blank-line paragraphs.
+function normText(t) {
+  t = String(t).replace(/\r\n?/g, "\n").replace(/[\u200b\u200d\ufeff\u00ad]/g, "").replace(/[ \t]+$/gm, "");
+  const lines = t.split("\n"), ne = lines.filter(l => l.trim()).length, blank = lines.length - ne;
+  if (ne >= 12 && blank < ne * 0.08) t = t.replace(/\n/g, "\n\n");
+  return t.replace(/\n{3,}/g, "\n\n").trim();
+}
+const wcount = s => (String(s).match(/\S+/g) || []).length;
+const natCmp = (() => { try { const c = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" }); return (a, b) => c.compare(a, b); } catch (e) { return (a, b) => (a < b ? -1 : a > b ? 1 : 0); } })();
+const cleanTitle = s => String(s).replace(/^#{1,6}\s*/, "").replace(/[*_~`]+/g, "").replace(/\s+/g, " ").trim().replace(/[:\-\u2013\u2014\s]+$/, "").slice(0, 100);
+const prettyName = n => String(n).split(/[\\/]/).pop().replace(/\.[a-z0-9]{1,5}$/i, "").replace(/_+/g, " ").replace(/^([^\s]+)$/, x => x.replace(/-+/g, " ")).replace(/\s+/g, " ").trim() || "Untitled";
+const NUMW = "one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred";
+const NUMW_RX = new RegExp("^(?:" + NUMW + ")(?:[- ](?:" + NUMW + "))?$", "i");
+// "Chapter 3", "Chapter Three: The Storm", "Part II", "Prologue", "Epilogue"... but never an ordinary sentence that merely starts with one of those words.
+function isKwHead(t) {
+  t = t.replace(/^#{1,3}\s*/, "").replace(/^[*_\s]+/, "").replace(/[*_\s]+$/, "");
+  let rest;
+  const pm = t.match(/^(?:prologue|epilogue|interlude|intermission|omake|afterword|one-?shot)\b(.*)$/i);
+  if (pm) rest = pm[1];
+  else {
+    const m = t.match(/^(?:chapter|chap\.?|ch\.?|part|book)\s+(\S+?)(?=[\s:.\-\u2013\u2014)]|$)(.*)$/i);
+    if (!m) return false;
+    const tok = m[1];
+    if (!(/^\d+$/.test(tok) || /^[IVXLCDM]{1,7}$/.test(tok) || NUMW_RX.test(tok))) {
+      const two = (tok + " " + (m[2].trim().split(/\s+/)[0] || "")).trim();   // "twenty one"
+      if (!NUMW_RX.test(two)) return false;
+    }
+    rest = m[2];
+  }
+  rest = rest.trim();
+  if (!rest) return true;
+  const n = rest.split(/\s+/).length;
+  if (/^[:.\-\u2013\u2014)]/.test(rest)) return n <= 14;
+  return n <= 8 && !/[.!?,;]$/.test(rest) && /^[A-Z0-9"'\u201c(]/.test(rest);
+}
+function findHeads(text) {
+  const lines = text.split("\n"), md = [], kw = [];
+  let off = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i], t = ln.trim(), start = off, end = off + ln.length;
+    off += ln.length + 1;
+    if (!t || t.length > 110 || (i > 0 && lines[i - 1].trim())) continue;   // a heading stands alone after a blank line
+    const mh = t.match(/^(#{1,3})\s+(\S.*)$/);
+    if (mh) md.push({ level: mh[1].length, title: cleanTitle(mh[2]), start, end });
+    if (isKwHead(t)) kw.push({ level: 0, title: cleanTitle(t), start, end });
+  }
+  for (let lv = 1; lv <= 3; lv++) { const hs = md.filter(h => h.level === lv); if (hs.length >= 2) return hs; }
+  if (kw.length >= 2) return kw;
+  return md.length === 1 ? md : kw.length === 1 ? kw : [];
+}
+const FRONT_RX = /^(cover|title page|table of contents|contents|copyright|dedication|acknowledg|about the author|colophon|front matter|preface|nav)\b/i;
+// One document (a file, or one section of an EPUB) becomes one or more chapters.
+function splitDoc(doc, split) {
+  const text = doc.text, heads = findHeads(text), base = doc.title || prettyName(doc.name);
+  const mk = (title, body, extra) => { body = String(body).trim(); const words = wcount(body); return { title: cleanTitle(title) || "Untitled", text: body, words, src: doc.name, on: words >= 40 && !FRONT_RX.test(cleanTitle(title)) && !doc.off, ...extra }; };
+  if (split && heads.length >= 2) {
+    const out = [], pre = text.slice(0, heads[0].start).trim();
+    if (wcount(pre) >= 20) out.push(mk(base + " (before first heading)", pre, { on: wcount(pre) >= 400 && !doc.off }));
+    heads.forEach((h, i) => out.push(mk(h.title, text.slice(h.end, i + 1 < heads.length ? heads[i + 1].start : text.length))));
+    return out;
+  }
+  if (heads.length === 1 && text.slice(0, heads[0].start).trim() === "") return [mk(heads[0].title, text.slice(heads[0].end))];   // a lone heading at the very top is the title
+  return [mk(base, text)];
+}
+/* ----- zip (stored or deflate; no zip64) ----- */
+async function inflateRaw(u8) {
+  if (typeof DecompressionStream === "undefined") throw new Error("this browser can't open EPUB, DOCX or ZIP files. Update it, or export the story as .txt or .html");
+  const stream = new Blob([u8]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+async function readZip(u8) {
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength), min = Math.max(0, u8.length - 22 - 65535);
+  let e = u8.length - 22;
+  while (e >= min && dv.getUint32(e, true) !== 0x06054b50) e--;
+  if (e < min) throw new Error("this isn't a valid zip-based file");
+  const n = dv.getUint16(e + 10, true); let p = dv.getUint32(e + 16, true);
+  const files = new Map();
+  for (let i = 0; i < n; i++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) throw new Error("the zip index is damaged");
+    const method = dv.getUint16(p + 10, true), csize = dv.getUint32(p + 20, true), nl = dv.getUint16(p + 28, true), el = dv.getUint16(p + 30, true), cl = dv.getUint16(p + 32, true), lho = dv.getUint32(p + 42, true);
+    const name = new TextDecoder().decode(u8.subarray(p + 46, p + 46 + nl)).replace(/\\/g, "/");
+    p += 46 + nl + el + cl;
+    if (csize === 0xffffffff) throw new Error("this zip is too large (zip64 isn't supported)");
+    files.set(name, async () => {
+      if (dv.getUint32(lho, true) !== 0x04034b50) throw new Error("the zip entry is damaged");
+      const start = lho + 30 + dv.getUint16(lho + 26, true) + dv.getUint16(lho + 28, true), data = u8.subarray(start, start + csize);
+      if (method === 0) return data;
+      if (method === 8) return inflateRaw(data);
+      throw new Error("unsupported compression in zip");
+    });
+  }
+  return files;
+}
+const zipGet = (z, name) => { if (z.has(name)) return z.get(name); const l = name.toLowerCase(); for (const [k, v] of z) if (k.toLowerCase() === l) return v; return null; };
+const xmlAttrs = s => { const o = {}; String(s).replace(/([\w:.-]+)\s*=\s*("([^"]*)"|'([^']*)')/g, (m, k, q, a, b) => { o[k.toLowerCase()] = decEnt(a !== undefined ? a : b); return m; }); return o; };
+const joinPath = (dir, href) => { const out = []; (dir + href).split("/").forEach(s => { if (s === "..") out.pop(); else if (s && s !== ".") out.push(s); }); return out.join("/"); };
+async function epubDocs(z, fname) {
+  const cg = zipGet(z, "META-INF/container.xml"); if (!cg) throw new Error("this EPUB has no container.xml");
+  const root = (decodeBytes(await cg()).match(/full-path\s*=\s*["']([^"']+)["']/i) || [])[1]; if (!root) throw new Error("this EPUB has no package file");
+  const og = zipGet(z, root); if (!og) throw new Error("this EPUB's package file is missing");
+  const opf = decodeBytes(await og()), dir = root.includes("/") ? root.slice(0, root.lastIndexOf("/") + 1) : "";
+  const items = new Map();
+  for (const m of opf.matchAll(/<item\b([^>]*)>/gi)) { const a = xmlAttrs(m[1]); if (a.id && a.href) items.set(a.id, a); }
+  const docs = []; let n = 0;
+  for (const m of opf.matchAll(/<itemref\b([^>]*)>/gi)) {
+    const ref = xmlAttrs(m[1]), it = items.get(ref.idref);
+    if (!it || !/html|xml/i.test(it["media-type"] || "") || /\bnav\b/.test(it.properties || "")) continue;
+    let href = it.href.split("#")[0]; try { href = decodeURIComponent(href); } catch (e) {}
+    const g = zipGet(z, joinPath(dir, href)); if (!g) continue;
+    const text = normText(htmlToMd(decodeBytes(await g())));
+    if (!text) continue;
+    n++; docs.push({ name: href.split("/").pop(), text, title: "Section " + n, off: /^no$/i.test(ref.linear || "") });
+  }
+  return docs;
+}
+const IMPORT_EXT = /\.(txt|text|md|markdown|html?|xhtml|docx|epub|zip)$/i;
+async function readAny(name, u8, depth = 0) {
+  const ext = (name.match(/\.([a-z0-9]+)$/i) || [0, ""])[1].toLowerCase(), docs = [], skipped = [];
+  const why = r => { skipped.push({ name, reason: r }); return { docs, skipped }; };
+  if (u8.length > 60e6) return why("larger than 60 MB");
+  if (["txt", "text", "md", "markdown"].includes(ext)) docs.push({ name, text: normText(decodeBytes(u8)) });
+  else if (["html", "htm", "xhtml"].includes(ext)) docs.push({ name, text: normText(htmlToMd(decodeBytes(u8))) });
+  else if (ext === "docx") {
+    const z = await readZip(u8), g = zipGet(z, "word/document.xml"); if (!g) return why("not a Word document");
+    docs.push({ name, text: normText(docxToMd(decodeBytes(await g()))) });
+  } else if (ext === "epub") { const z = await readZip(u8); (await epubDocs(z, name)).forEach(d => docs.push(d)); }
+  else if (ext === "zip") {
+    if (depth >= 2) return why("zip inside zip inside zip");
+    const z = await readZip(u8), names = [...z.keys()].filter(k => !k.endsWith("/") && !/(^|\/)(__MACOSX\/|\.[^/]*$)/.test(k)).sort(natCmp);
+    for (const k of names) {
+      if (!IMPORT_EXT.test(k)) { if (!/\.(png|jpe?g|gif|css|ncx|opf|xml|json|ttf|otf|woff2?)$/i.test(k)) skipped.push({ name: k, reason: "not a supported file type" }); continue; }
+      try { const r = await readAny(k, await z.get(k)(), depth + 1); r.docs.forEach(d => docs.push(d)); r.skipped.forEach(s => skipped.push(s)); }
+      catch (e) { skipped.push({ name: k, reason: e.message }); }
+    }
+  } else if (ext === "pdf") return why("PDFs can't be read here. Export the story as .txt, .docx or .epub");
+  else if (ext === "rtf" || ext === "doc") return why("this format isn't supported. Save it as .docx or .txt");
+  else {
+    if (u8.subarray(0, 4096).includes(0)) return why("not a supported file type");
+    docs.push({ name, text: normText(decodeBytes(u8)) });
+  }
+  const keep = docs.filter(d => d.text && d.text.trim());
+  if (!keep.length && !skipped.length) skipped.push({ name, reason: "no text found" });
+  return { docs: keep, skipped };
+}
+/* ----- helpers for building the Bible ----- */
+function chunkText(t, max) {
+  const paras = t.split(/\n\s*\n/), out = []; let cur = "";
+  for (const p of paras) {
+    if (cur && cur.length + p.length + 2 > max) { out.push(cur); cur = ""; }
+    if (p.length > max) { for (let i = 0; i < p.length; i += max) out.push(p.slice(i, i + max)); continue; }
+    cur += (cur ? "\n\n" : "") + p;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+// Groups consecutive chapters so each model call stays under maxChars; one very long chapter is cut into parts.
+function packBatches(chs, maxChars) {
+  const batches = []; let cur = [], n = 0;
+  const flush = () => { if (cur.length) batches.push(cur); cur = []; n = 0; };
+  for (const c of chs) {
+    const t = String(c.text || "").trim(); if (!t) continue;
+    if (t.length > maxChars) { flush(); const parts = chunkText(t, maxChars); parts.forEach((p, i) => batches.push([{ title: c.title + (parts.length > 1 ? ` (part ${i + 1} of ${parts.length})` : ""), text: p }])); continue; }
+    if (n + t.length > maxChars) flush();
+    cur.push({ title: c.title, text: t }); n += t.length;
+  }
+  flush();
+  return batches;
+}
+const nkey = s => String(s || "").trim().toLowerCase();
+function findEntry(list, name) {
+  const k = nkey(name); if (!k) return null;
+  return list.find(e => nkey(e.name) === k) || list.find(e => String(e.aliases || "").split(",").some(a => nkey(a) === k)) || null;
+}
+
+/* ---------- Import: screens and memory building ---------- */
+function guessTitle(names) {
+  const ns = names.map(prettyName);
+  if (!ns.length) return "Imported fic";
+  if (ns.length === 1) return ns[0];
+  let p = ns[0];
+  for (const n of ns) while (p && !n.toLowerCase().startsWith(p.toLowerCase())) p = p.slice(0, -1);
+  p = p.replace(/[\s\-_.:,(]*(?:chapter|chap|ch|part|pt|c)?[\s\-_.]*\d*$/i, "").trim();
+  return p.length >= 3 ? p : "Imported fic";
+}
+function pickImportFiles() {
+  return new Promise(res => {
+    const inp = document.createElement("input"); inp.type = "file"; inp.multiple = true; inp.accept = ".txt,.text,.md,.markdown,.html,.htm,.xhtml,.docx,.epub,.zip,text/plain,text/html"; inp.style.display = "none";
+    document.body.appendChild(inp);
+    const done = v => { inp.remove(); res(v); };
+    inp.onchange = () => done([...inp.files]);
+    inp.addEventListener("cancel", () => done([]));
+    inp.click();
+  });
+}
+async function readImportFiles(files) {
+  const docs = [], skipped = [], sorted = files.slice().sort((a, b) => natCmp(a.name, b.name));
+  for (let i = 0; i < sorted.length; i++) {
+    const fl = sorted[i];
+    setStatus(`Reading ${i + 1} of ${sorted.length}: ${fl.name}`, "persist");
+    try { const r = await readAny(fl.name, new Uint8Array(await fl.arrayBuffer())); r.docs.forEach(x => docs.push(x)); r.skipped.forEach(s => skipped.push(s)); }
+    catch (e) { skipped.push({ name: fl.name, reason: e.message }); }
+  }
+  return { docs, skipped, names: sorted.map(x => x.name) };
+}
+// Review screen: pick, rename and reorder the chapters, and choose where they go. Resolves with the choices, or null if cancelled.
+function importDialog(docs0, skipped0, names0, cur) {
+  return new Promise(res => {
+    const d = document.createElement("dialog"); d.className = "ask";
+    const docs = docs0.slice(), skipped = skipped0.slice(), names = names0.slice();
+    let rows = [], split = true, target = cur ? cur.id : "new", title = guessTitle(names), status = "done", addNext = true, out = null;
+    const tf = () => S.fics.find(x => x.id === target) || null;
+    const dupKey = t => { t = t.trim(); return t.slice(0, 200) + "|" + t.length; };
+    const derive = () => {
+      const old = new Map(rows.map((r, i) => [r.key, { r, i }])), f = tf(), dups = new Set(f ? f.chapters.map(c => dupKey(c.text)) : []), fresh = [];
+      docs.forEach((doc, di) => splitDoc(doc, split).forEach((c, i) => {
+        const key = di + ":" + doc.name + "#" + i, o = old.get(key), dup = dups.has(dupKey(c.text));
+        fresh.push({ ...c, key, dup, title: o ? o.r.title : c.title, on: o ? o.r.on : c.on && !dup, pos: o ? o.i : 1e9 + fresh.length });
+      }));
+      fresh.sort((a, b) => a.pos - b.pos); rows = fresh;
+    };
+    d.innerHTML = `<h3>Import chapters</h3>
+      <div class="mute" id="isum" style="font-size:14px;margin:0 0 8px"></div>
+      <label for="itarget" style="margin-top:0">Where to put them</label>
+      <select id="itarget"><option value="new">A new fic</option>${S.fics.map(f => `<option value="${esc(f.id)}">Add to \u201c${esc(f.title)}\u201d</option>`).join("")}</select>
+      <div id="inew"><label for="ititle" style="margin-top:0">Fic title</label><input id="ititle" maxlength="120" autocomplete="off"></div>
+      <details class="more" style="margin:0 0 8px"><summary>Options</summary>
+        <div class="row" style="margin:8px 0 6px"><label style="display:flex;gap:8px;align-items:center;margin:0;color:var(--ink)"><input type="checkbox" id="isplit" checked style="width:auto;margin:0">Split files that hold several chapters</label></div>
+        <div class="row" style="margin:0 0 6px"><label style="margin:0">Mark chapters as</label><select id="istat" style="width:auto;margin:0">${STATUS.map(x => `<option ${x === "done" ? "selected" : ""}>${x}</option>`).join("")}</select></div>
+        <div class="row" style="margin:0 0 4px"><label style="display:flex;gap:8px;align-items:center;margin:0;color:var(--ink)"><input type="checkbox" id="inext" checked style="width:auto;margin:0">Add an empty next chapter to continue in</label></div>
+      </details>
+      <div class="row" style="margin:0 0 6px"><button class="g" type="button" id="iall">All</button><button class="g" type="button" id="inone">None</button><button class="g" type="button" id="imore">Add more files</button></div>
+      <div id="ilist" style="max-height:42vh;overflow:auto"></div>
+      <div class="mute" id="iskip" style="font-size:13px;margin-top:6px"></div>
+      <div class="row" style="justify-content:flex-end;margin:12px 0 0"><button class="g" type="button" id="icancel">Cancel</button><button class="b" type="button" id="iok">Import</button></div>`;
+    document.body.appendChild(d);
+    const $d = s => d.querySelector(s);
+    const sumLine = () => {
+      const on = rows.filter(r => r.on), w = on.reduce((n, r) => n + r.words, 0);
+      $d("#isum").textContent = `${on.length} of ${rows.length} chapter${rows.length === 1 ? "" : "s"} selected \u00b7 ${w.toLocaleString()} words`;
+      $d("#iok").disabled = !on.length || (target === "new" && !title.trim());
+      $d("#iskip").innerHTML = skipped.length ? "Skipped: " + skipped.slice(0, 6).map(s => `${esc(s.name)} (${esc(s.reason)})`).join("; ") + (skipped.length > 6 ? `; and ${skipped.length - 6} more` : "") : "";
+    };
+    const drawList = () => {
+      const box = $d("#ilist"); box.innerHTML = "";
+      if (!rows.length) box.innerHTML = `<div class="empty">No chapters found.</div>`;
+      rows.forEach((r, i) => {
+        const el = document.createElement("div"); el.className = "item"; el.style.cssText = "margin:6px 0;padding:8px 10px";
+        el.innerHTML = `<div class="row" style="margin:0;flex-wrap:nowrap;gap:10px"><input type="checkbox" ${r.on ? "checked" : ""} style="width:auto;margin:0" aria-label="Import this chapter"><input class="it" value="${esc(r.title)}" maxlength="100" style="margin:0;flex:1;min-width:0" aria-label="Chapter title"></div>
+          <div class="row" style="margin:4px 0 0;flex-wrap:nowrap"><span class="mute grow" style="font-size:12.5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.words.toLocaleString()} words \u00b7 ${esc(r.src)}${r.dup ? " \u00b7 already in this fic" : ""}${r.words < 40 ? " \u00b7 very short" : ""}</span><button class="g ib" type="button" data-a="up" aria-label="Move up" ${i === 0 ? "disabled" : ""}>${svg("up")}</button><button class="g ib" type="button" data-a="down" aria-label="Move down" ${i === rows.length - 1 ? "disabled" : ""}>${svg("down")}</button></div>`;
+        el.querySelector('input[type="checkbox"]').onchange = e => { r.on = e.target.checked; sumLine(); };
+        el.querySelector(".it").oninput = e => { r.title = e.target.value; };
+        el.querySelector('[data-a="up"]').onclick = () => { if (i > 0) { [rows[i - 1], rows[i]] = [rows[i], rows[i - 1]]; drawList(); } };
+        el.querySelector('[data-a="down"]').onclick = () => { if (i < rows.length - 1) { [rows[i + 1], rows[i]] = [rows[i], rows[i + 1]]; drawList(); } };
+        box.appendChild(el);
+      });
+      sumLine();
+    };
+    $d("#itarget").value = target; $d("#ititle").value = title; $d("#inew").hidden = target !== "new";
+    $d("#itarget").onchange = e => { target = e.target.value; $d("#inew").hidden = target !== "new"; derive(); drawList(); };
+    $d("#ititle").oninput = e => { title = e.target.value; sumLine(); };
+    $d("#isplit").onchange = e => { split = e.target.checked; derive(); drawList(); };
+    $d("#istat").onchange = e => { status = e.target.value; };
+    $d("#inext").onchange = e => { addNext = e.target.checked; };
+    $d("#iall").onclick = () => { rows.forEach(r => { r.on = true; }); drawList(); };
+    $d("#inone").onclick = () => { rows.forEach(r => { r.on = false; }); drawList(); };
+    $d("#imore").onclick = async () => {
+      const files = await pickImportFiles(); if (!files.length) return;
+      const r = await readImportFiles(files); setStatus(`Added ${r.docs.length} more.`);
+      r.docs.forEach(x => { if (!docs.some(y => y.name === x.name && y.text === x.text)) docs.push(x); });
+      r.skipped.forEach(s => skipped.push(s)); r.names.forEach(n => names.push(n));
+      derive(); drawList();
+    };
+    $d("#icancel").onclick = () => d.close();
+    $d("#iok").onclick = () => { out = { rows: rows.filter(r => r.on && r.text.trim()), target, title, status, addNext }; d.close(); };
+    d.addEventListener("cancel", () => { out = null; });
+    d.addEventListener("close", () => { d.remove(); res(out); });
+    derive(); drawList(); d.showModal();
+  });
+}
+function doImport(o) {
+  let f = null, created = false;
+  if (o.target === "new") { f = { id: uid(), title: o.title.trim() || "Imported fic", premise: "", style: "", bible: [], chapters: [], ch: null, chat: [], sources: [] }; created = true; }
+  else f = S.fics.find(x => x.id === o.target);
+  if (!f || !o.rows.length) return null;
+  const prevCh = f.ch, had = sessionStartByFic.get(f.id);
+  // An untouched empty chapter at the end is the "next chapter" slot: keep it last, after the imported ones.
+  const last = f.chapters[f.chapters.length - 1];
+  const tail = !created && last && !last.text.trim() && !(last.summary || "").trim() && !(last.next || "").trim() && !(last.must || "").trim() && !(last.goal > 0) ? last : null, tailTitle = tail && tail.title;
+  if (!created && f.chapters.length === 1 && !tail) { f.chat.forEach(x => { if (!x.ch) x.ch = f.chapters[0].id; }); dirtyFx(f); }
+  if (tail) f.chapters.pop();
+  const made = o.rows.map(r => ({ id: uid(), title: r.title.trim() || "Untitled", status: o.status, summary: "", next: "", text: r.text, rejected: [] }));
+  const added = made.reduce((n, c) => n + words(c.text), 0);
+  f.chapters.push(...made);
+  let nextC = null;
+  if (tail) { if (/^Chapter \d+$/.test(tail.title)) tail.title = "Chapter " + (f.chapters.length + 1); f.chapters.push(tail); nextC = tail; }
+  else if (o.addNext) { nextC = { id: uid(), title: "Chapter " + (f.chapters.length + 1), status: "drafting", summary: "", next: "", text: "", rejected: [] }; f.chapters.push(nextC); }
+  if (created) S.fics.push(f);
+  S.cur = f.id; f.ch = (nextC || made[made.length - 1]).id;
+  sessionStartByFic.set(f.id, had === undefined ? ficTotalWords(f) : had + added);
+  dirtyFx(f); save(true);
+  const undo = () => {
+    f.chapters = f.chapters.filter(c => (c !== nextC || c === tail) && !made.includes(c));
+    if (tail) tail.title = tailTitle;
+    if (created) { const at = S.fics.indexOf(f); if (at > -1) S.fics.splice(at, 1); S.cur = S.fics[0] ? S.fics[0].id : null; sessionStartByFic.delete(f.id); }
+    else { f.ch = f.chapters.some(c => c.id === prevCh) ? prevCh : (f.chapters[f.chapters.length - 1] || {}).id || null; if (had === undefined) sessionStartByFic.delete(f.id); else sessionStartByFic.set(f.id, had); }
+    HIST_STACK.clear(); dirtyFx(f); save(true); render();
+  };
+  return { f, made, nextC, created, added, undo };
+}
+async function importFlow(cur) {
+  if (ctrl || chatCtrl || fixCtrl) return setStatus("Wait for the current job to finish.");
+  const files = await pickImportFiles(); if (!files.length) return;
+  const r = await readImportFiles(files);
+  if (!r.docs.length) return setStatus("Nothing to import. " + (r.skipped[0] ? r.skipped[0].name + ": " + r.skipped[0].reason + "." : ""), "err");
+  setStatus(`Read ${r.docs.length} file${r.docs.length === 1 ? "" : "s"}.`);
+  const o = await importDialog(r.docs, r.skipped, r.names, cur); if (!o) return;
+  const res = doImport(o); if (!res) return setStatus("Nothing was imported.", "err");
+  tab = "chapters"; render();
+  setStatus(`Imported ${res.made.length} chapter${res.made.length === 1 ? "" : "s"} (${res.added.toLocaleString()} words).`);
+  await memoryDialog(res.f, res.made, { undo: res.undo, count: res.made.length, words: res.added });
+}
+/* ----- building memory: summaries, Bible, premise and style ----- */
+function parseObj(txt) {
+  const t = String(txt || "").replace(/```[a-z]*\s*/gi, "").replace(/```/g, ""), a = t.indexOf("{"), b = t.lastIndexOf("}");
+  const tryP = x => { try { return JSON.parse(x); } catch (e) { return null; } }, noTrail = x => x.replace(/,\s*([\]}])/g, "$1");
+  if (a >= 0 && b > a) { const body = t.slice(a, b + 1), v = tryP(body) || tryP(noTrail(body)) || tryP(noTrail(escapeCtl(body))); if (v && typeof v === "object" && !Array.isArray(v)) return v; }
+  throw new Error("could not read the model's reply. Try again, or pick a different chat model in Settings.");
+}
+async function aiText(model, key, system, user, maxTok, signal) {
+  const r = await fetchOR({ model, stream: false, max_tokens: maxTok, temperature: 0.3, ...extraParams(model, "sum"), messages: mkMsgs(model, system, null, user) }, key, signal);
+  const j = await r.json(), ch = j.choices && j.choices[0], m = ch && ch.message;
+  const txt = m ? (Array.isArray(m.content) ? m.content.map(x => x.text || "").join("") : String(m.content || "")) : "";
+  if (!txt.trim()) throw new Error(ch && ch.finish_reason === "length" ? "the model used up its reply budget before answering" : "the model sent back an empty reply");
+  return txt.trim();
+}
+async function summarizeChapter(c, model, key, sig) {
+  const sys = "You are a careful story editor. Output only the summary, with no preamble.", t = c.text.trim();
+  if (t.length <= SUM_IN) return aiText(model, key, sys, `Summarize this chapter in at most 5 short lines, focusing on plot events, character changes and open threads.\n\n${t}`, 2000, sig);
+  const parts = chunkText(t, SUM_IN), partial = [];   // a very long chapter: summarize each part, then combine
+  for (let i = 0; i < parts.length; i++) partial.push(await aiText(model, key, sys, `Summarize part ${i + 1} of ${parts.length} of a chapter in at most 5 short lines, focusing on plot events, character changes and open threads.\n\n${parts[i]}`, 2000, sig));
+  return aiText(model, key, sys, `These are summaries of consecutive parts of one chapter. Combine them into a summary of the whole chapter in at most 5 short lines.\n\n${partial.map((p, i) => `PART ${i + 1}:\n${p}`).join("\n\n")}`, 2000, sig);
+}
+function bibleForPrompt(draft, blind) {
+  let used = 0; const lines = [], names = [];
+  for (const e of draft) {
+    if (!(e.name || e.text)) continue;
+    const full = e.text || "", t = full.length > 900 ? full.slice(0, 900) + "\u2026" : full, line = `[${e.type}] ${e.name}${e.aliases ? " (aliases: " + e.aliases + ")" : ""}: ${t}`;
+    if (used + line.length <= 24000) { lines.push(line); used += line.length; if (full.length > 900) blind.add(e); } else { names.push(e.name); blind.add(e); }
+  }
+  return lines.join("\n") + (names.length ? "\n\nOTHER EXISTING ENTRIES (names only; do not add duplicates): " + names.join(", ") : "");
+}
+// Folds the model's items into the working draft. `blind` marks entries whose full text the model could not see, so those are appended to rather than replaced.
+function applyDraft(draft, items, blind) {
+  for (const x of items) {
+    if (!x || typeof x.name !== "string" || typeof x.text !== "string") continue;
+    const name = x.name.trim(), text = x.text.trim(); if (!name || !text) continue;
+    const type = TYPES.includes(x.type) ? x.type : "lore", al = typeof x.aliases === "string" ? x.aliases : "", ex = findEntry(draft, name);
+    if (ex) {
+      if (nkey(ex.text) === nkey(text)) continue;
+      ex.text = blind.has(ex) || (ex.text || "").length > 2500 ? (ex.text || "").trimEnd() + "\n" + text : text;
+      ex.aliases = mergeAliases(ex.aliases, al);
+    } else draft.unshift({ id: uid(), name, type, aliases: al.trim(), pin: false, cs: false, text });
+  }
+}
+async function bibleBatch(f, draft, batch, model, key, sig, blind) {
+  const system = "You are a careful continuity editor who builds a story bible for a fanfiction from chapters that are already written. You record only facts the text actually establishes.";
+  const body = batch.map(c => `### ${c.title}\n${c.text}`).join("\n\n");
+  const user = `${f.premise ? "PREMISE:\n" + f.premise + "\n\n" : ""}CURRENT BIBLE:\n${bibleForPrompt(draft, blind) || "(empty)"}\n\nCHAPTERS (already written, in order):\n\n${body}\n\nTASK: Propose bible entries based on these chapters. Return ONLY a JSON array, with no prose and no code fences. Each item has:\n- "action": "add" or "update"\n- "type": one of ${TYPES.join(", ")}\n- "name": for an update, exactly the existing entry's name\n- "aliases": comma-separated nicknames or alternate names, optional\n- "text": 1 to 4 concrete sentences; for an update, the full replacement text for that entry, keeping its existing facts\nRules: include only facts the chapters establish and never invent. Do not repeat facts already in the bible. Cover the important named characters (role, appearance, relationships, current status), key places, established rules or abilities, and the main ongoing plot threads (type plot). Skip trivial one-scene extras. At most 15 items. If nothing qualifies, return [].`;
+  const txt = await aiText(model, key, system, user, 6000, sig);
+  return parseBibleJson(txt).slice(0, 15);
+}
+function styleSamples(chs) {
+  const pick = (c, where) => {
+    const t = c.text.trim(); if (t.length <= 3000) return t;
+    const at = where === "start" ? 0 : where === "mid" ? Math.floor(t.length / 2 - 1500) : t.length - 3000;
+    let s = t.slice(Math.max(0, at), Math.max(0, at) + 3000);
+    if (at > 0) { const i = s.indexOf("\n\n"); if (i > -1 && i < 800) s = s.slice(i + 2); }
+    return s;
+  };
+  const a = chs[0], z = chs[chs.length - 1], m = chs[Math.floor(chs.length / 2)];
+  return [["opening", pick(a, "start")], ["middle", pick(m, "mid")], ["latest", pick(z, "end")]].map(([k, s], i) => `SAMPLE ${i + 1} (${k}):\n${s}`).join("\n\n---\n\n");
+}
+const memCost = (model, inTok, outTok) => estCost(model, inTok, outTok);
+function memEstimate(chs, needSum, part) {
+  applyCaps();
+  if (part === "sum") return { inTok: needSum.reduce((n, c) => n + estTok(c.text) + 80, 0), outTok: needSum.length * 160 + needSum.filter(c => c.text.length > SUM_IN).length * 300 };
+  if (part === "bible") { const bs = packBatches(chs, SUM_IN); return { inTok: bs.reduce((n, b) => n + b.reduce((m, c) => m + estTok(c.text), 0), 0) + bs.length * 3500, outTok: bs.length * 1500 }; }
+  return { inTok: 3000 + Math.min(4000, chs.length * 120) + 2500, outTok: 800 };
+}
+async function memoryDialog(f, chs, o = {}) {
+  const key = S.settings.key.trim(), model = (S.settings.chatModel ?? defChat()).trim() || defChat();
+  await priceReady();
+  const withText = chs.filter(c => c.text.trim()), needSum = withText.filter(c => !c.summary.trim());
+  if (!withText.length) { if (o.undo) return; return setStatus("There is no chapter text to read yet."); }
+  const costTxt = part => { const e = memEstimate(withText, needSum, part), c = memCost(model, e.inTok, e.outTok); return c === null ? "cost unknown for this model" : "about " + fmtCost(c); };
+  return new Promise(res => {
+    const d = document.createElement("dialog"); d.className = "ask";
+    const chk = (id, on, label, sub) => `<label style="display:flex;gap:10px;align-items:flex-start;margin:12px 0 0;color:var(--ink)"><input type="checkbox" data-o="${id}" ${on ? "checked" : ""} ${key ? "" : "disabled"} style="width:auto;margin:4px 0 0"><span>${label}<span class="mute" style="display:block;font-size:13px">${sub}</span></span></label>`;
+    d.innerHTML = `<h3>Build memory</h3>
+      <p class="mute" style="margin:0;font-size:14px;line-height:1.5">${o.count ? `Imported ${o.count} chapter${o.count === 1 ? "" : "s"} (${(o.words || 0).toLocaleString()} words). ` : ""}When you continue the story, the AI only sees chapter summaries and Bible entries for the earlier chapters. Building them now lets it carry on accurately. You review everything before it is saved to the Bible.</p>
+      ${o.undo ? `<div class="row" style="margin:8px 0 0"><button class="g" type="button" data-u="1">Undo import</button></div>` : ""}
+      ${chk("sum", needSum.length > 0, "Summarize each chapter", `${needSum.length} without a summary \u00b7 ${esc(costTxt("sum"))}`)}
+      ${chk("bible", true, "Draft Bible entries from the chapters", `Characters, places, rules and plot threads \u00b7 ${esc(costTxt("bible"))}`)}
+      ${chk("ps", !f.premise.trim() || !f.style.trim(), "Draft premise and style notes", `Style notes help it keep your voice \u00b7 ${esc(costTxt("ps"))}`)}
+      <p class="mute" style="margin:12px 0 0;font-size:13px">${key ? `Uses your chat model (${esc(model.split("/").pop())}). Costs are estimates.` : `Add your ${esc(provName())} key in Settings to use these. You can run this later from Bible \u2192 \u22ef \u2192 Build from chapters.`}</p>
+      <div class="row" style="justify-content:flex-end;margin:12px 0 0"><button class="g" type="button" data-v="skip">${key ? "Not now" : "Close"}</button><button class="b" type="button" data-v="go" ${key ? "" : "disabled"}>Start</button></div>`;
+    document.body.appendChild(d);
+    let out = null; const sel = () => ({ sum: d.querySelector('[data-o="sum"]').checked, bible: d.querySelector('[data-o="bible"]').checked, ps: d.querySelector('[data-o="ps"]').checked });
+    const upd = () => { const s = sel(); d.querySelector('[data-v="go"]').disabled = !key || !(s.sum || s.bible || s.ps); };
+    d.querySelectorAll("input[data-o]").forEach(x => { x.onchange = upd; }); upd();
+    const u = d.querySelector("[data-u]"); if (u) u.onclick = () => { out = "undo"; d.close(); };
+    d.querySelectorAll("button[data-v]").forEach(b => { b.onclick = () => { out = b.dataset.v; d.close(); }; });
+    d.addEventListener("close", async () => {
+      const s = sel(); d.remove();
+      if (out === "undo") { o.undo(); setStatus("Import undone."); }
+      else if (out === "go") await buildMemory(f, { chs: withText, model, ...s });
+      res();
+    });
+    d.showModal();
+  });
+}
+async function buildMemory(f, o) {
+  const key = S.settings.key.trim(), model = o.model;
+  if (!key) return setStatus("Add your " + provName() + " key in Settings first.");
+  if (ctrl || chatCtrl || fixCtrl) return setStatus("Wait for the current job to finish.");
+  applyCaps();
+  const needSum = o.chs.filter(c => !c.summary.trim()), parts = [];
+  if (o.sum && needSum.length) parts.push(memEstimate(o.chs, needSum, "sum"));
+  if (o.bible) parts.push(memEstimate(o.chs, needSum, "bible"));
+  if (o.ps) parts.push(memEstimate(o.chs, needSum, "ps"));
+  const cg = await costGate(model, parts.reduce((n, p) => n + p.inTok, 0), parts.reduce((n, p) => n + p.outTok, 0), 1, "Building memory"); if (!cg.ok) return;
+  const stop = { label: "Stop", fn: () => fixCtrl && fixCtrl.abort() }, report = [];
+  let stopped = false;
+  try {
+    if (o.sum && needSum.length) {
+      fixCtrl = new AbortController(); const sig = fixCtrl.signal; let done = 0, fail = 0, idx = 0, err = "";
+      const prog = () => setStatus(`Summarizing: ${done} of ${needSum.length}${fail ? ` (${fail} failed)` : ""}`, "persist", stop);
+      prog();
+      const worker = async () => {
+        while (idx < needSum.length && !sig.aborted) {
+          const c = needSum[idx++];
+          try { c.summary = await summarizeChapter(c, model, key, sig); save(); done++; }
+          catch (e) { if (e.name === "AbortError" || sig.aborted) return; fail++; err = err || e.message; }
+          prog();
+        }
+      };
+      await Promise.all([worker(), worker(), worker()]);
+      stopped = sig.aborted; fixCtrl = null; save(true);
+      report.push(`${done} summar${done === 1 ? "y" : "ies"}` + (fail ? ` (${fail} failed: ${err})` : ""));
+    }
+    if (o.bible && !stopped) {
+      const batches = packBatches(o.chs, SUM_IN), draft = f.bible.map(e => ({ ...e })), blind = new Set();
+      fixCtrl = new AbortController(); const sig = fixCtrl.signal; let bi = 0, fail = 0, err = "";
+      for (; bi < batches.length && !sig.aborted; bi++) {
+        setStatus(`Reading for the Bible: ${bi + 1} of ${batches.length}`, "persist", stop);
+        try { applyDraft(draft, await bibleBatch(f, draft, batches[bi], model, key, sig, blind), blind); }
+        catch (e) { if (e.name === "AbortError" || sig.aborted) break; fail++; err = err || e.message; }
+      }
+      stopped = sig.aborted; fixCtrl = null;
+      const was = new Map(f.bible.map(e => [e.id, e])), order = TYPES.slice(), items = [];
+      draft.slice().reverse().forEach(e => {
+        const w = was.get(e.id);
+        if (!w) items.push({ action: "add", type: e.type, name: e.name, aliases: e.aliases || "", text: e.text, reason: "", old: "" });
+        else if (w.text !== e.text || (w.aliases || "") !== (e.aliases || "")) items.push({ action: "update", type: e.type, name: e.name, aliases: e.aliases || "", text: e.text, reason: "", old: w.text || "" });
+      });
+      items.sort((a, b) => order.indexOf(a.type) - order.indexOf(b.type) || (a.action === "add" ? 0 : 1) - (b.action === "add" ? 0 : 1));
+      if (fail) report.push(`${fail} of ${batches.length} Bible reads failed (${err})`);
+      if (items.length) {
+        setStatus(`${items.length} Bible suggestion${items.length === 1 ? "" : "s"} ready.${stopped ? " (stopped early)" : ""}`);
+        const picked = await reviewBible(items);
+        if (picked && picked.length) {
+          let na = 0, nu = 0;
+          picked.forEach(it => {
+            const ex = findEntry(f.bible, it.name);
+            if (ex) { ex.text = it.text; ex.aliases = mergeAliases(ex.aliases, it.aliases); nu++; }
+            else { f.bible.unshift({ id: uid(), name: it.name.trim(), type: it.type, aliases: (it.aliases || "").trim(), pin: false, cs: false, text: it.text }); na++; }
+          });
+          save(true); report.push(`Bible: ${na} added, ${nu} updated`);
+        } else report.push("no Bible changes applied");
+      } else report.push("no new Bible entries");
+    }
+    if (o.ps && !stopped) {
+      fixCtrl = new AbortController(); const sig = fixCtrl.signal;
+      setStatus("Reading the style and setup\u2026", "persist", stop);
+      try {
+        const sums = o.chs.filter(c => c.summary.trim()).map(c => `${c.title}: ${c.summary.trim()}`).join("\n").slice(0, 14000);
+        const user = `${sums ? "CHAPTER SUMMARIES:\n" + sums + "\n\n" : ""}WRITING SAMPLES:\n${styleSamples(o.chs)}\n\nTASK: Return ONLY a JSON object with two string fields, with no prose and no code fences.\n- "premise": 3 to 5 sentences covering the setup, the main characters, the central conflict, and where the story stands at the end of the latest chapter. Do not invent anything.\n- "style": 5 to 8 short lines of guidance for a writer who must continue this story in the same voice: point of view and tense, tone, sentence rhythm, how dialogue is written and tagged, how thoughts and scene breaks are formatted, and any recurring habits to keep.`;
+        const v = parseObj(await aiText(model, key, "You are a careful story editor. You describe an existing fanfiction accurately and never invent plot.", user, 3000, sig));
+        fixCtrl = null;
+        const str = x => (Array.isArray(x) ? x.join("\n") : typeof x === "string" ? x : "").trim(), r = {};
+        const a = await askChoice("Premise and style notes", "Edit what you like, then apply. Leave a box empty to keep what you have now.", [{ id: "no", label: "Discard", cls: "g" }, { id: "ok", label: "Apply", cls: "b" }],
+          `<label>Premise${f.premise.trim() ? " (replaces your current one)" : ""}</label><textarea data-k="premise" rows="6">${esc(str(v.premise))}</textarea><label>Style notes${f.style.trim() ? " (replaces your current ones)" : ""}</label><textarea data-k="style" rows="7">${esc(str(v.style))}</textarea>`, r);
+        if (a === "ok") { if ((r.premise || "").trim()) f.premise = r.premise.trim(); if ((r.style || "").trim()) f.style = r.style.trim(); save(true); report.push("premise and style updated"); }
+        else report.push("premise and style discarded");
+      } catch (e) { if (e.name === "AbortError") stopped = true; else report.push("premise and style failed (" + e.message + ")"); }
+    }
+  } catch (e) {
+    report.push("stopped by an error: " + e.message);
+  } finally { fixCtrl = null; save(true); }
+  setStatus((stopped ? "Stopped. " : "Done. ") + (report.length ? report.join("; ") + "." : ""), report.some(x => /fail|error/.test(x)) ? "err" : "info");
+  renderHeader(); if (tab === "chapters" || tab === "bible") render();
 }
 
 const wcLbl = c => chWords(c).toLocaleString() + " words" + (c.goal > 0 ? " / " + c.goal.toLocaleString() : "");
