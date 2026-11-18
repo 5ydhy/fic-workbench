@@ -505,6 +505,7 @@ const DB = {
   } catch (e) { no(e); } }); },
   open() { return new Promise(res => { try { const r = indexedDB.open("ficWorkbench", 1); r.onupgradeneeded = () => r.result.createObjectStore("kv"); r.onsuccess = () => { DB.db = r.result; DB.db.onversionchange = () => { try { DB.db.close(); } catch (e) {} }; res(true); }; r.onerror = r.onblocked = () => res(false); } catch (e) { res(false); } }); },
   get(k) { return new Promise((ok, no) => { try { const q = DB.db.transaction("kv").objectStore("kv").get(k); q.onsuccess = () => ok(q.result); q.onerror = () => no(q.error); } catch (e) { no(e); } }); },
+  del(k) { return new Promise((ok, no) => { try { const t = DB.db.transaction("kv", "readwrite"); t.objectStore("kv").delete(k); t.oncomplete = ok; t.onerror = t.onabort = () => no(t.error); } catch (e) { no(e); } }); },
   set(k, v) { return new Promise((ok, no) => { try { const t = DB.db.transaction("kv", "readwrite"); t.objectStore("kv").put(v, k); t.oncomplete = ok; t.onerror = t.onabort = () => no(t.error); } catch (e) { no(e); } }); }
 };
 DB.putMany = ops => new Promise((ok, no) => { try {
@@ -663,6 +664,7 @@ async function wipeAll() {
   try {
     await _pq;
     localStorage.removeItem(KEY);
+    try { jobCache.clear(); Object.keys(localStorage).filter(k => k.startsWith(KEY + ".bj.")).forEach(k => localStorage.removeItem(k)); } catch (e) {}
     if (DB.db) {
       await new Promise((res, rej) => { const tx = DB.db.transaction("kv", "readwrite"); tx.objectStore("kv").clear(); tx.oncomplete = () => res(); tx.onerror = tx.onabort = () => rej(tx.error || new Error("Delete failed")); });
       try { bc && bc.postMessage("wipe"); } catch (e) {}
@@ -757,6 +759,7 @@ async function boot() {
   if (!fic() && S.fics.length) S.cur = S.fics[0].id;
   resetSessionBaseline();
   render();
+  jobLoadAll().then(() => { if (tab === "bible") render(); }).catch(() => {});
   if (!DB.db) noStorageNote();
   setTimeout(backupNudge, 2500);
   setTimeout(loadPrices, 1200);
@@ -1124,6 +1127,7 @@ const hintOf = t => String(t || "").replace(/\s+/g, " ").trim().slice(0, 48) || 
 function viewBible(m) {
   const f = fic();
   m.innerHTML = `<h2>Story bible</h2>
+  <div id="bjBanner"></div>
   <label for="ftitle">Fic title</label>
   <input id="ftitle" maxlength="120" value="${esc(f.title)}" placeholder="Name of this fic" autocomplete="off">
   <details class="sec" data-k="prem" ${secOpen("prem")}><summary>Premise<span class="hint" id="premHint">${esc(hintOf(f.premise))}</span></summary>
@@ -1151,6 +1155,7 @@ function viewBible(m) {
   m.querySelectorAll("details.sec").forEach(d => { d.ontoggle = () => { if (d.open) secState.add(d.dataset.k); else secState.delete(d.dataset.k); }; });
   $("bMore").onclick = e => { const t = $("bTools"); t.hidden = !t.hidden; e.currentTarget.setAttribute("aria-expanded", String(!t.hidden)); };
   $("memB").onclick = () => memoryDialog(f, f.chapters, {});
+  drawJobBanner(f);
   $("sugB").onclick = () => { const c = curCh(f); if (!c) return setStatus("No chapter yet."); suggestBible(f, c); };
   $("tidyB").onclick = () => tidyBible(f);
   $("libB").onclick = () => libraryPicker(f);
@@ -1160,7 +1165,7 @@ function viewBible(m) {
   $("delFic").onclick = async () => {
     if (!await askDanger("Delete \u201c" + f.title + "\u201d?", "This removes the fic, its " + f.chapters.length + " chapter(s) (" + ficTotalWords(f).toLocaleString() + " words), Bible entries, and chat. We recommend downloading a backup first.", "Delete fic")) return;
     const at = S.fics.indexOf(f); if (at < 0) return;
-    S.fics.splice(at, 1); S.cur = S.fics[0]?.id ?? null; HIST_STACK.clear(); save(true); render();
+    S.fics.splice(at, 1); S.cur = S.fics[0]?.id ?? null; HIST_STACK.clear(); jobDrop(f); save(true); render();
     setStatus('Deleted "' + f.title + '".', "info", { label: "Undo", fn: () => { S.fics.splice(Math.min(at, S.fics.length), 0, f); S.cur = f.id; save(true); render(); } });
   };
   $("bq").oninput = e => { bibleQ = e.target.value; drawEnts(f, m); };
@@ -2565,10 +2570,24 @@ function styleSamples(chs) {
   return [["opening", pick(a, "start")], ["middle", pick(m, "mid")], ["latest", pick(z, "end")]].map(([k, s], i) => `SAMPLE ${i + 1} (${k}):\n${s}`).join("\n\n---\n\n");
 }
 const memCost = (model, inTok, outTok) => estCost(model, inTok, outTok);
-function memEstimate(chs, needSum, part) {
+/* ----- an unfinished Bible draft is kept, so it can be continued or reviewed later ----- */
+const jobCache = new Map(), jobKey = f => "bj:" + f.id, jobLsKey = f => KEY + ".bj." + f.id;
+const batchSig = batches => hashStr(batches.map(b => b.map(c => c.title + ":" + c.text.length).join("|")).join("#"));
+async function jobSave(f, job) { jobCache.set(f.id, job); try { if (DB.db) await DB.set(jobKey(f), job); else localStorage.setItem(jobLsKey(f), JSON.stringify(job)); } catch (e) {} }
+async function jobDrop(f) { jobCache.delete(f.id); try { if (DB.db) await DB.del(jobKey(f)); else localStorage.removeItem(jobLsKey(f)); } catch (e) {} }
+async function jobLoadAll() {
+  for (const f of S.fics) {
+    try { const j = DB.db ? await DB.get(jobKey(f)) : JSON.parse(localStorage.getItem(jobLsKey(f)) || "null"); if (j && j.v === 1 && Array.isArray(j.draft)) jobCache.set(f.id, j); } catch (e) {}
+  }
+}
+const jobChapters = (f, j) => (j.ids || []).map(id => f.chapters.find(c => c.id === id)).filter(c => c && c.text.trim());
+const jobNew = j => { const ids = new Set((j.base || []).map(x => x[0])); return j.draft.filter(e => !ids.has(e.id)).length; };
+const jobLeft = j => { const set = new Set(j.failed || []); for (let i = j.next; i < j.total; i++) set.add(i); return set; };
+function jobValid(f, j) { applyCaps(); const chs = jobChapters(f, j), bs = packBatches(chs, SUM_IN); return !!chs.length && j.sig === batchSig(bs) && j.total === bs.length; }
+function memEstimate(chs, needSum, part, idx) {
   applyCaps();
   if (part === "sum") return { inTok: needSum.reduce((n, c) => n + estTok(c.text) + 80, 0), outTok: needSum.length * 160 + needSum.filter(c => c.text.length > SUM_IN).length * 300 };
-  if (part === "bible") { const bs = packBatches(chs, SUM_IN); return { inTok: bs.reduce((n, b) => n + b.reduce((m, c) => m + estTok(c.text), 0), 0) + bs.length * 3500, outTok: bs.length * 1500 }; }
+  if (part === "bible") { const bs = packBatches(chs, SUM_IN).filter((_, i) => !idx || idx.has(i)); return { inTok: bs.reduce((n, b) => n + b.reduce((m, c) => m + estTok(c.text), 0), 0) + bs.length * 3500, outTok: bs.length * 1500 }; }
   return { inTok: 3000 + Math.min(4000, chs.length * 120) + 2500, outTok: 800 };
 }
 async function memoryDialog(f, chs, o = {}) {
@@ -2577,18 +2596,33 @@ async function memoryDialog(f, chs, o = {}) {
   const withText = chs.filter(c => c.text.trim()), needSum = withText.filter(c => !c.summary.trim());
   if (!withText.length) { if (o.undo) return; return setStatus("There is no chapter text to read yet."); }
   const costTxt = part => { const e = memEstimate(withText, needSum, part), c = memCost(model, e.inTok, e.outTok); return c === null ? "cost unknown for this model" : "about " + fmtCost(c); };
+  const jobAll = jobCache.get(f.id); applyCaps();
+  const allBs = packBatches(withText, SUM_IN), jobOk = !!jobAll && jobAll.sig === batchSig(allBs) && jobAll.total === allBs.length;
+  let resume = jobOk;
+  const bibleSub = () => {
+    if (resume) {
+      const left = jobLeft(jobAll), n = jobNew(jobAll);
+      if (!left.size) return `All chapters were read \u00b7 ${n} suggestion${n === 1 ? "" : "s"} waiting for review \u00b7 no cost`;
+      const e = memEstimate(withText, needSum, "bible", left), c = memCost(model, e.inTok, e.outTok);
+      return `${jobAll.total - left.size} of ${jobAll.total} reads done \u00b7 ${n} suggestion${n === 1 ? "" : "s"} so far \u00b7 ${c === null ? "cost unknown for this model" : "about " + esc(fmtCost(c)) + " to finish"}`;
+    }
+    return `Characters, places, rules and plot threads \u00b7 ${esc(costTxt("bible"))}${jobAll && !jobOk ? " \u00b7 replaces an unfinished draft for other chapters" : ""}`;
+  };
   return new Promise(res => {
     const d = document.createElement("dialog"); d.className = "ask";
-    const chk = (id, on, label, sub) => `<label style="display:flex;gap:10px;align-items:flex-start;margin:12px 0 0;color:var(--ink)"><input type="checkbox" data-o="${id}" ${on ? "checked" : ""} ${key ? "" : "disabled"} style="width:auto;margin:4px 0 0"><span>${label}<span class="mute" style="display:block;font-size:13px">${sub}</span></span></label>`;
+    const chk = (id, on, label, sub) => `<label style="display:flex;gap:10px;align-items:flex-start;margin:12px 0 0;color:var(--ink)"><input type="checkbox" data-o="${id}" ${on ? "checked" : ""} ${key ? "" : "disabled"} style="width:auto;margin:4px 0 0"><span><span data-lab="${id}">${label}</span><span class="mute" data-sub="${id}" style="display:block;font-size:13px">${sub}</span></span></label>`;
     d.innerHTML = `<h3>Build memory</h3>
       <p class="mute" style="margin:0;font-size:14px;line-height:1.5">${o.count ? `Imported ${o.count} chapter${o.count === 1 ? "" : "s"} (${(o.words || 0).toLocaleString()} words). ` : ""}When you continue the story, the AI only sees chapter summaries and Bible entries for the earlier chapters. Building them now lets it carry on accurately. You review everything before it is saved to the Bible.</p>
       ${o.undo ? `<div class="row" style="margin:8px 0 0"><button class="g" type="button" data-u="1">Undo import</button></div>` : ""}
       ${chk("sum", needSum.length > 0, "Summarize each chapter", `${needSum.length} without a summary \u00b7 ${esc(costTxt("sum"))}`)}
-      ${chk("bible", true, "Draft Bible entries from the chapters", `Characters, places, rules and plot threads \u00b7 ${esc(costTxt("bible"))}`)}
+      ${chk("bible", true, resume ? "Continue the earlier Bible draft" : "Draft Bible entries from the chapters", bibleSub())}
+      ${jobOk ? `<div class="row" style="margin:4px 0 0 28px"><button class="g" type="button" data-fresh="1">Start the Bible draft over</button></div>` : ""}
       ${chk("ps", !f.premise.trim() || !f.style.trim(), "Draft premise and style notes", `Style notes help it keep your voice \u00b7 ${esc(costTxt("ps"))}`)}
       <p class="mute" style="margin:12px 0 0;font-size:13px">${key ? `Uses your chat model (${esc(model.split("/").pop())}). Costs are estimates.` : `Add your ${esc(provName())} key in Settings to use these. You can run this later from Bible \u2192 \u22ef \u2192 Build from chapters.`}</p>
       <div class="row" style="justify-content:flex-end;margin:12px 0 0"><button class="g" type="button" data-v="skip">${key ? "Not now" : "Close"}</button><button class="b" type="button" data-v="go" ${key ? "" : "disabled"}>Start</button></div>`;
     document.body.appendChild(d);
+    const refreshBible = () => { d.querySelector('[data-lab="bible"]').textContent = resume ? "Continue the earlier Bible draft" : "Draft Bible entries from the chapters"; d.querySelector('[data-sub="bible"]').innerHTML = bibleSub(); };
+    const fr = d.querySelector("[data-fresh]"); if (fr) fr.onclick = () => { resume = false; refreshBible(); fr.parentNode.style.display = "none"; };
     let out = null; const sel = () => ({ sum: d.querySelector('[data-o="sum"]').checked, bible: d.querySelector('[data-o="bible"]').checked, ps: d.querySelector('[data-o="ps"]').checked });
     const upd = () => { const s = sel(); d.querySelector('[data-v="go"]').disabled = !key || !(s.sum || s.bible || s.ps); };
     d.querySelectorAll("input[data-o]").forEach(x => { x.onchange = upd; }); upd();
@@ -2597,7 +2631,7 @@ async function memoryDialog(f, chs, o = {}) {
     d.addEventListener("close", async () => {
       const s = sel(); d.remove();
       if (out === "undo") { o.undo(); setStatus("Import undone."); }
-      else if (out === "go") await buildMemory(f, { chs: withText, model, ...s });
+      else if (out === "go") await buildMemory(f, { chs: withText, model, ...s, resume });
       res();
     });
     d.showModal();
@@ -2610,7 +2644,7 @@ async function buildMemory(f, o) {
   applyCaps();
   const needSum = o.chs.filter(c => !c.summary.trim()), parts = [];
   if (o.sum && needSum.length) parts.push(memEstimate(o.chs, needSum, "sum"));
-  if (o.bible) parts.push(memEstimate(o.chs, needSum, "bible"));
+  if (o.bible) { const rj = o.resume ? jobCache.get(f.id) : null; parts.push(memEstimate(o.chs, needSum, "bible", rj && rj.sig === batchSig(packBatches(o.chs, SUM_IN)) ? jobLeft(rj) : null)); }
   if (o.ps) parts.push(memEstimate(o.chs, needSum, "ps"));
   const cg = await costGate(model, parts.reduce((n, p) => n + p.inTok, 0), parts.reduce((n, p) => n + p.outTok, 0), 1, "Building memory"); if (!cg.ok) return;
   const stop = { label: "Stop", fn: () => fixCtrl && fixCtrl.abort() }, report = [];
@@ -2633,35 +2667,29 @@ async function buildMemory(f, o) {
       report.push(`${done} summar${done === 1 ? "y" : "ies"}` + (fail ? ` (${fail} failed: ${err})` : ""));
     }
     if (o.bible && !stopped) {
-      const batches = packBatches(o.chs, SUM_IN), draft = f.bible.map(e => ({ ...e })), blind = new Set();
-      fixCtrl = new AbortController(); const sig = fixCtrl.signal; let bi = 0, fail = 0, err = "";
-      for (; bi < batches.length && !sig.aborted; bi++) {
-        setStatus(`Reading for the Bible: ${bi + 1} of ${batches.length}`, "persist", stop);
-        try { applyDraft(draft, await bibleBatch(f, draft, batches[bi], model, key, sig, blind), blind); }
-        catch (e) { if (e.name === "AbortError" || sig.aborted) break; fail++; err = err || e.message; }
+      const batches = packBatches(o.chs, SUM_IN), bsig = batchSig(batches);
+      let job = o.resume ? jobCache.get(f.id) : null;
+      if (job && (job.sig !== bsig || job.total !== batches.length)) job = null;
+      const draft = job ? job.draft.map(e => ({ ...e })) : f.bible.map(e => ({ ...e })), blindIds = new Set(job ? job.blind : []), blind = new Set(draft.filter(e => blindIds.has(e.id)));
+      const base = job ? new Map(job.base) : new Map(f.bible.map(e => [e.id, { text: e.text || "", aliases: e.aliases || "" }])), failed = new Set(job ? job.failed || [] : []);
+      let next = job ? job.next : 0;
+      const queue = [...failed, ...Array.from({ length: Math.max(0, batches.length - next) }, (_, i) => next + i)];
+      const snap = done => jobSave(f, { v: 1, ids: o.chs.map(c => c.id), sig: bsig, next, total: batches.length, failed: [...failed], done, draft: draft.map(e => ({ ...e })), blind: draft.filter(e => blind.has(e)).map(e => e.id), base: [...base], at: Date.now() });
+      fixCtrl = new AbortController(); const sg = fixCtrl.signal; let ran = 0, err = "";
+      for (const bi of queue) {
+        if (sg.aborted) break;
+        setStatus(`Reading for the Bible: ${ran + 1} of ${queue.length}`, "persist", stop);
+        try { applyDraft(draft, await bibleBatch(f, draft, batches[bi], model, key, sg, blind), blind); failed.delete(bi); }
+        catch (e) { if (e.name === "AbortError" || sg.aborted) break; failed.add(bi); err = err || e.message; }
+        if (bi >= next) next = bi + 1;
+        ran++; await snap(false);   // saved after every read, so closing the tab loses at most one
       }
-      stopped = sig.aborted; fixCtrl = null;
-      const was = new Map(f.bible.map(e => [e.id, e])), order = TYPES.slice(), items = [];
-      draft.slice().reverse().forEach(e => {
-        const w = was.get(e.id);
-        if (!w) items.push({ action: "add", type: e.type, name: e.name, aliases: e.aliases || "", text: e.text, reason: "", old: "" });
-        else if (w.text !== e.text || (w.aliases || "") !== (e.aliases || "")) items.push({ action: "update", type: e.type, name: e.name, aliases: e.aliases || "", text: e.text, reason: "", old: w.text || "" });
-      });
-      items.sort((a, b) => order.indexOf(a.type) - order.indexOf(b.type) || (a.action === "add" ? 0 : 1) - (b.action === "add" ? 0 : 1));
-      if (fail) report.push(`${fail} of ${batches.length} Bible reads failed (${err})`);
-      if (items.length) {
-        setStatus(`${items.length} Bible suggestion${items.length === 1 ? "" : "s"} ready.${stopped ? " (stopped early)" : ""}`);
-        const picked = await reviewBible(items);
-        if (picked && picked.length) {
-          let na = 0, nu = 0;
-          picked.forEach(it => {
-            const ex = findEntry(f.bible, it.name);
-            if (ex) { ex.text = it.text; ex.aliases = mergeAliases(ex.aliases, it.aliases); nu++; }
-            else { f.bible.unshift({ id: uid(), name: it.name.trim(), type: it.type, aliases: (it.aliases || "").trim(), pin: false, cs: false, text: it.text }); na++; }
-          });
-          save(true); report.push(`Bible: ${na} added, ${nu} updated`);
-        } else report.push("no Bible changes applied");
-      } else report.push("no new Bible entries");
+      stopped = sg.aborted; fixCtrl = null;
+      const complete = !stopped && !failed.size && next >= batches.length;
+      await snap(complete);
+      if (failed.size) report.push(`${failed.size} of ${batches.length} Bible reads failed (${err})`);
+      const r = await runBibleReview(f, draft, base, complete, stopped);
+      report.push(r.kept ? "Bible draft saved for later (Bible tab)" : r.none ? "no new Bible entries" : `Bible: ${r.na} added, ${r.nu} updated`);
     }
     if (o.ps && !stopped) {
       fixCtrl = new AbortController(); const sig = fixCtrl.signal;
@@ -2683,6 +2711,43 @@ async function buildMemory(f, o) {
   } finally { fixCtrl = null; save(true); }
   setStatus((stopped ? "Stopped. " : "Done. ") + (report.length ? report.join("; ") + "." : ""), report.some(x => /fail|error/.test(x)) ? "err" : "info");
   renderHeader(); if (tab === "chapters" || tab === "bible") render();
+}
+// Turns a finished (or partial) draft into a review list and applies what the person keeps. Entries they edited or deleted since the draft began are left alone.
+async function runBibleReview(f, draft, base, complete, early) {
+  const cur = new Map(f.bible.map(e => [e.id, e])), order = TYPES.slice(), items = [];
+  draft.slice().reverse().forEach(e => {
+    const b = base.get(e.id);
+    if (!b) items.push({ action: "add", type: e.type, name: e.name, aliases: e.aliases || "", text: e.text, reason: "", old: "" });
+    else { const c = cur.get(e.id); if (c && (e.text !== b.text || (e.aliases || "") !== b.aliases)) items.push({ action: "update", type: e.type, name: e.name, aliases: e.aliases || "", text: e.text, reason: "", old: c.text || "" }); }
+  });
+  items.sort((a, b) => order.indexOf(a.type) - order.indexOf(b.type) || (a.action === "add" ? 0 : 1) - (b.action === "add" ? 0 : 1));
+  if (!items.length) { if (complete) await jobDrop(f); return { none: true }; }
+  setStatus(`${items.length} Bible suggestion${items.length === 1 ? "" : "s"} ready.${early ? " (stopped early)" : ""}`);
+  const picked = await reviewBible(items);
+  if (picked === null) return { kept: true };   // dismissed: the draft stays saved
+  let na = 0, nu = 0;
+  picked.forEach(it => {
+    const ex = findEntry(f.bible, it.name);
+    if (ex) { ex.text = it.text; ex.aliases = mergeAliases(ex.aliases, it.aliases); nu++; }
+    else { f.bible.unshift({ id: uid(), name: it.name.trim(), type: it.type, aliases: (it.aliases || "").trim(), pin: false, cs: false, text: it.text }); na++; }
+  });
+  save(true); await jobDrop(f);
+  return { na, nu };
+}
+// Shown at the top of the Bible tab while an unfinished draft is saved.
+function drawJobBanner(f) {
+  const box = $("bjBanner"); if (!box) return;
+  const j = jobCache.get(f.id);
+  if (!j) { box.innerHTML = ""; return; }
+  const left = jobLeft(j).size, n = jobNew(j), valid = jobValid(f, j);
+  box.innerHTML = `<div class="item" style="margin:0 0 12px"><b>Unfinished Bible draft</b><div class="mute" style="font-size:14px;margin:4px 0 8px">${left ? `${j.total - left} of ${j.total} reads done` : "All chapters were read"} \u00b7 ${n} suggestion${n === 1 ? "" : "s"} waiting for review.${left && !valid ? " The chapters have changed since, so reading can't continue." : ""}</div><div class="row" style="margin:0"><button class="b" type="button" id="bjRev">Review</button>${left && valid ? `<button class="g" type="button" id="bjGo">Continue</button>` : ""}<button class="g" type="button" id="bjNo">Discard</button></div></div>`;
+  $("bjRev").onclick = async () => {
+    const r = await runBibleReview(f, j.draft.map(e => ({ ...e })), new Map(j.base), !left, false);
+    if (r.na !== undefined) setStatus(`Bible: ${r.na} added, ${r.nu} updated.`);
+    render();
+  };
+  const go = $("bjGo"); if (go) go.onclick = () => memoryDialog(f, jobChapters(f, j), {});
+  $("bjNo").onclick = async () => { if (await askChoice("Discard this Bible draft?", "The suggestions it found so far will be lost. Your Bible stays as it is.", [{ id: "no", label: "Keep it", cls: "g" }, { id: "ok", label: "Discard", cls: "b" }]) === "ok") { await jobDrop(f); drawJobBanner(f); } };
 }
 
 const wcLbl = c => chWords(c).toLocaleString() + " words" + (c.goal > 0 ? " / " + c.goal.toLocaleString() : "");
