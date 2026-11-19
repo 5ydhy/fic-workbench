@@ -366,6 +366,8 @@ function autoFit(ta) {
 }
 document.addEventListener("input", e => { if (e.target.tagName === "TEXTAREA") autoFit(e.target); });
 
+// Must be defined before load() runs: migrateSettings reads it.
+const DEAD_MODELS = new Set(["anthropic/claude-3.7-sonnet", "anthropic/claude-sonnet-4.5", "anthropic/claude-haiku-4.5", "google/gemini-3.7-flash", "google/gemini-2.5-pro", "deepseek/deepseek-v4-pro"]);
 let S = load(), tab = "write", fullEd = false, edPreview = false, insMode = "norm", credCache = null, progEdit = false;
 const sessionStartByFic = new Map();
 let chatExp = new WeakSet(), chatCol = new WeakSet(), chatExpAll = false, chatCustomMod = false;
@@ -434,7 +436,6 @@ const canUndo = cid => (HIST_STACK.get(cid)?.undo.length || 0) > 0;
 const canRedo = cid => (HIST_STACK.get(cid)?.redo.length || 0) > 0;
 const lastUndoText = cid => { const u = HIST_STACK.get(cid)?.undo; return u && u.length ? u[u.length - 1] : null; };
 
-const DEAD_MODELS = new Set(["anthropic/claude-3.7-sonnet", "anthropic/claude-sonnet-4.5", "anthropic/claude-haiku-4.5", "google/gemini-3.7-flash", "google/gemini-2.5-pro", "deepseek/deepseek-v4-pro"]);
 function migrateSettings(st) {
   if (st.baseUrl && st.other && typeof st.other === "object") {
     ["models", "model", "chatModel", "key"].forEach(k => { st[k] = st.other[k] || (k === "key" ? "" : st[k]); });
@@ -1165,7 +1166,7 @@ function viewBible(m) {
   $("delFic").onclick = async () => {
     if (!await askDanger("Delete \u201c" + f.title + "\u201d?", "This removes the fic, its " + f.chapters.length + " chapter(s) (" + ficTotalWords(f).toLocaleString() + " words), Bible entries, and chat. We recommend downloading a backup first.", "Delete fic")) return;
     const at = S.fics.indexOf(f); if (at < 0) return;
-    S.fics.splice(at, 1); S.cur = S.fics[0]?.id ?? null; HIST_STACK.clear(); jobDrop(f); save(true); render();
+    S.fics.splice(at, 1); S.cur = S.fics[0]?.id ?? null; f.chapters.forEach(c => HIST_STACK.delete(c.id)); jobDrop(f); save(true); render();
     setStatus('Deleted "' + f.title + '".', "info", { label: "Undo", fn: () => { S.fics.splice(Math.min(at, S.fics.length), 0, f); S.cur = f.id; save(true); render(); } });
   };
   $("bq").oninput = e => { bibleQ = e.target.value; drawEnts(f, m); };
@@ -1312,7 +1313,7 @@ function drawSources(f, m) {
       if (!key) return setStatus("Add your " + provName() + " key in Settings first.");
       if (a <= 1) return setStatus("Nothing comes before the passage.", "info");
       const model = (S.settings.chatModel || defChat()).trim(), earlier = srcParas(sr.text).slice(0, a - 1).join("\n\n").slice(-60000);
-      btn.disabled = true; setStatus("Summarizing the earlier part…", "info", null, "persist");
+      btn.disabled = true; setStatus("Summarizing the earlier part…", "persist");
       try {
         const r = await fetchOR({ model, messages: mkMsgs(model, "You summarize source material for a fanfiction writer.", null, "Summarize this earlier part of a source text in at most 8 short lines: events, who is present, what each character knows or feels, and open threads. No commentary.\n\n" + earlier), max_tokens: 1200, temperature: 0.3 }, key);
         const j = await r.json(), t = ((j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || "").trim();
@@ -1713,7 +1714,7 @@ const fmtCost = c => c < 0.005 ? "<$0.01" : "$" + c.toFixed(2);
 async function costGate(model, inTok, outTok, n, what) {
   await priceReady();
   const c = estCost(model, inTok, outTok, n);
-  if (c === null) return { ok: true, txt: "" };
+  if (c === null) return { ok: true, txt: isTR() ? ", cost estimate unavailable on TokenReply" : "" };
   const txt = ", est. " + fmtCost(c);
   const lim = parseFloat(S.settings.costWarn), th = Number.isFinite(lim) ? lim : 0.5;
   if (th > 0 && c > th) {
@@ -1788,9 +1789,11 @@ async function fixFlagged(c, flagged) {
   const list = S.settings.models.split("\n").map(v => v.trim()).filter(Boolean), model = currentModel();
   if (!model) return setStatus("Add at least one model in Settings first.", "err");
   const use = flagged.slice(0, 15), orig = c.text, cid = c.id, fid = f.id;
-  const ctx = buildContext(f, c, use.map(g => g.p).join(" ").slice(0, 3000));
+  // The scanner straightens apostrophes to match; send the author's own paragraph text so curly quotes survive.
+  const origParts = orig.split(/(\n[ \t]*\n+)/), rawP = g => origParts[2 * (g.k - 1)] ?? g.p;
+  const ctx = buildContext(f, c, use.map(rawP).join(" ").slice(0, 3000));
   const system = ctx.system + "\n\nEDITING MODE: You are a fiction line-editor removing AI-sounding tells while keeping the author's story and voice intact.";
-  const blocks = use.map(g => `[P${g.k}] (flagged: ${[...new Set(g.hits.map(h => g.p.slice(h.s, h.e).trim()))].slice(0, 8).map(t => JSON.stringify(t)).join(", ")})\n${g.p.trim()}`).join("\n\n");
+  const blocks = use.map(g => `[P${g.k}] (flagged: ${[...new Set(g.hits.map(h => g.p.slice(h.s, h.e).trim()))].slice(0, 8).map(t => JSON.stringify(t)).join(", ")})\n${rawP(g).trim()}`).join("\n\n");
   const user = `Each paragraph below was flagged by an automated scan for AI-sounding tells.\n\nTASK: Rewrite only the flagged parts. Split em-dash sentences into separate sentences (use no em dashes at all). Replace stock phrases with a specific concrete action or detail, or cut them. Rewrite "not X but Y" constructions as a direct statement. Keep the meaning, events, dialogue content, POV, tense, voice, and length close to the original, and leave everything unflagged untouched.\n\nOutput every paragraph in the same order. Start each with its marker on its own line, like [P4], followed by the revised paragraph. No other text.\n\n${blocks}`;
   const cg = await costGate(model, estTok(system) + estTok(user), Math.round(estTok(blocks) * 1.1), 1, "This cleanup");
   if (!cg.ok) return;
@@ -2492,7 +2495,7 @@ function doImport(o) {
     if (tail) tail.title = tailTitle;
     if (created) { const at = S.fics.indexOf(f); if (at > -1) S.fics.splice(at, 1); S.cur = S.fics[0] ? S.fics[0].id : null; sessionStartByFic.delete(f.id); }
     else { f.ch = f.chapters.some(c => c.id === prevCh) ? prevCh : (f.chapters[f.chapters.length - 1] || {}).id || null; if (had === undefined) sessionStartByFic.delete(f.id); else sessionStartByFic.set(f.id, had); }
-    HIST_STACK.clear(); dirtyFx(f); save(true); render();
+    made.forEach(c => HIST_STACK.delete(c.id)); if (nextC && nextC !== tail) HIST_STACK.delete(nextC.id); dirtyFx(f); save(true); render();
   };
   return { f, made, nextC, created, added, undo };
 }
@@ -3089,7 +3092,6 @@ async function fixDraft(f, x, btn) {
   const model = currentModel();
   if (!model) return setStatus("Add at least one model in Settings first.", "err");
   const critique = x.content.trim(), orig = c.text, origWords = words(orig), fid = f.id, cid = c.id, title = c.title;
-  if (estTok(orig) > 24000) return setStatus("This chapter is too long to correct in one pass.", "err");
   const parts = orig.split(/(\n[ \t]*\n+)/), np = Math.floor((parts.length + 1) / 2);
   const plist = Array.from({ length: np }, (_, k) => `${k + 1}. ${esc(parts[2 * k].trim().split(/\s+/).slice(0, 8).join(" "))}`).join("<br>");
   const scopeHtml = `<label>Only revise these paragraphs (optional)</label><input data-k="scope" placeholder="e.g. 4-7 or 12 (blank = whole chapter)"><details style="margin-top:8px"><summary class="mute">Paragraph list (${np})</summary><div class="mute" style="max-height:140px;overflow:auto;font-size:13px">${plist}</div></details>`;
@@ -3110,6 +3112,7 @@ async function fixDraft(f, x, btn) {
     if (a < 1 || b > np) return setStatus(`This chapter has ${np} paragraphs.`, "err");
     pre = parts.slice(0, 2 * (a - 1)).join(""); seg = parts.slice(2 * (a - 1), 2 * (b - 1) + 1).join(""); post = parts.slice(2 * (b - 1) + 1).join("");
   }
+  if (estTok(seg !== null ? seg : orig) > 24000) return setStatus(seg !== null ? "That range is too long to correct in one pass. Pick fewer paragraphs." : "This chapter is too long to correct in one pass. Enter a paragraph range instead.", "err");
   const ctx = buildContext(f, c, critique.slice(0, 3000));
   const idx = f.chapters.indexOf(c);
   const prevTail = idx > 0 ? f.chapters[idx - 1].text.trim().slice(-1200) : "";
@@ -3356,6 +3359,7 @@ async function run(c, mode, nOverride, regen) {
       c.text = keep; save(true); paintEditor(c);
     } else if (n === 1) { snapshot(c, "Before generate"); pushUndo(c.id, c.text); }
   }
+  if (mode === "sum") { const cg = await costGate(model, inTok, 300, 1, "This summary"); if (!cg.ok) return; costTxt = cg.txt; if (ctrl || fixCtrl) { setStatus("Already generating. Stop it first."); return; } }
   if (mode === "gen" && n > 1) return runN(c, model, key, mkMsgs(model, system, parts, user), inTok, maxTok, temp, n, costTxt);
   ctrl = new AbortController(); runCh = c.id;
   syncBusy(c.id);
@@ -4407,7 +4411,7 @@ function viewSettings(m) {
     if (!await askDanger("Delete \u201c" + f.title + "\u201d?", "This removes the fic, its " + f.chapters.length + " chapter(s) (" + wc + " words), Bible entries, and chat. We recommend downloading a backup first.", "Delete fic")) return;
     const at = S.fics.indexOf(f), prevCur = S.cur; S.fics.splice(at, 1);
     if (S.cur === f.id) S.cur = S.fics[0]?.id ?? null;
-    HIST_STACK.clear(); save(true); render();
+    f.chapters.forEach(c => HIST_STACK.delete(c.id)); jobDrop(f); save(true); render();
     setStatus("Deleted \u201c" + f.title + "\u201d.", "info", { label: "Undo", fn: () => { S.fics.splice(Math.min(at, S.fics.length), 0, f); S.cur = prevCur; dirtyFx(f); save(true); render(); } });
   };
   $("wipeData").onclick = async () => {
